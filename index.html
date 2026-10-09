@@ -167,6 +167,7 @@ input[type=checkbox]{accent-color:var(--accent);width:16px;height:16px}
 #revCanvas{display:block;cursor:crosshair;max-width:none}
 .rev-now{font:500 14px var(--mono);overflow-wrap:anywhere}
 .rev-tools{flex-wrap:wrap;gap:6px}.rev-sep{flex-basis:100%;height:0}.rev-tools .seg button{padding:6px 10px}
+.rev-now .sep{color:var(--muted);margin:0 2px}
 .rev-now .on{background:var(--accent);color:var(--accent-ink);border-radius:4px;padding:0 3px}
 .codeprev{display:flex;flex-direction:column;gap:3px;font-size:13px}
 .codeprev:empty{display:none}
@@ -2249,7 +2250,22 @@ function analyzeStaff(b,w,h,st,keyN){
   const I=new Int32Array((RW+1)*(RH+1));
   for(let y=0;y<RH;y++){ let row=0; for(let x=0;x<RW;x++){ row+=b[(y+Y0)*w+x+X0]; I[(y+1)*(RW+1)+x+1]=I[y*(RW+1)+x+1]+row; } }
   const box=(x0,y0,x1,y1)=>I[(y1+1)*(RW+1)+x1+1]-I[y0*(RW+1)+x1+1]-I[(y1+1)*(RW+1)+x0]+I[y0*(RW+1)+x0];
-  const startX=X0+Math.round((2.9+0.95*Math.abs(keyN))*s);
+  let startX=X0+Math.round((2.9+0.95*Math.abs(keyN))*s);
+  { // measure where the clef and key signature actually end (engravings differ in spacing)
+    const skip=new Set(); st.lines.forEach(ly=>{ for(let y=Math.round(ly-st.lt/2-1);y<=Math.round(ly+st.lt/2+1);y++) skip.add(y); });
+    const ya=Math.round(st.top-0.6*s), yb=Math.round(st.bottom+0.6*s), xe=Math.min(X1,X0+Math.round((8+1.4*Math.abs(keyN))*s));
+    const col=x=>{ let n=0; for(let y=ya;y<=yb;y++) if(!skip.has(y)&&at(x,y)) n++; return n; };
+    const runs=[]; let cur=null; // ink runs left→right
+    for(let x=X0;x<=xe;x++){ const ink=col(x)>0; if(ink){ if(cur&&x-cur.e<=1) cur.e=x; else { cur={s:x,e:x}; runs.push(cur); } } }
+    const merge=(list,gap)=>{ const o=[]; list.forEach(r=>{ const l=o[o.length-1]; if(l&&r.s-l.e<=gap) l.e=r.e; else o.push({...r}); }); return o; };
+    let i=runs.findIndex(r=>r.e-r.s>=1.0*s&&r.s<X0+4.5*s);
+    if(i>=0){
+      let end=runs[i].e; for(let j=i+1;j<runs.length;j++){ const r=runs[j]; if(r.s-end<=0.75*s&&r.e-r.s<=0.6*s) end=r.e; else break; } // clef incl. bass-clef dots
+      const ks=merge(runs.filter(r=>r.s>end),0.2*s); let k=0;
+      for(const r of ks){ if(k>=Math.abs(keyN)) break; if(r.s-end>1.6*s||r.e-r.s>1.6*s) break; end=r.e; k++; }
+      startX=Math.max(startX,Math.round(end+0.4*s));
+    }
+  }
   // columns inked through the whole staff height: barlines (stems never span all five lines)
   const bars=[]; const tall=Math.round(st.bottom)-Math.round(st.top)+1; const fullCol=new Uint8Array(w);
   for(let x=Math.max(X0,startX-Math.round(2*s));x<X1-1;x++){ if(x<X0+0.6*s) continue;
@@ -2432,6 +2448,7 @@ function analyzeStaff(b,w,h,st,keyN){
   const stacked=g=>glyphs.some(o=>o!==g&&o.h>1.2&&o.x0<=g.x1&&o.x1>=g.x0&&Math.abs(o.p-g.p)>=3);
   const hints=[];
   glyphs.forEach(g=>{
+    if(g.x0<startX-0.3*s) return; // reaches back into the clef / key signature
     const flag=isFlag(g), stk=stacked(g);
     const accFor=live.find(hd=>hd.cx>g.x1&&hd.hx0-g.x1<1.0*s&&hd.hx0-g.x1>-0.1*s&&hd.cy>g.y0-0.2*s&&hd.cy<g.y1+0.2*s);
     if(accFor&&!flag&&g.h>=1.0&&g.h<=3.4){ hints.push({x:accFor.cx,kind:'acc'}); return; } // accidental before a note
@@ -2609,6 +2626,8 @@ $('stripMarks').onclick=e=>{ const b=e.currentTarget, on=b.getAttribute('aria-pr
 const REV={on:false,n:null,sel:0,imgs:{},ins:'note'};
 function allStripBars(){ const out=[]; STRIPS.forEach((sp,si)=>sp.bars.forEach(m=>out.push({m,sp,si}))); return out; }
 function findStripBar(n){ return allStripBars().find(x=>x.m.n===n); }
+function revPair(){ const list=allStripBars(); const i=list.findIndex(x=>x.m.n===REV.n); return i<0?[]:list.slice(i,i+2); }
+function revToks(){ const ns=revPair().map(x=>x.m.n); if(!ns.length) ns.push(REV.n); return ns.flatMap(n=>barToks(n)); }
 function barToks(n){ return P.toks.map((t,i)=>({t,i})).filter(x=>x.t.bar===n&&(x.t.kind==='note'||x.t.kind==='rest')); }
 function nextBar(dir,fromN,onlySus,skipDone){
   const list=allStripBars(); const odd=barLenOdd(); let i=list.findIndex(x=>x.m.n===fromN);
@@ -2625,7 +2644,7 @@ function revGo(n){
   REV.n=n; REV.sel=0; if(P.bars[n]) goToBar(n); highlightBar(n); revSelect(0); revDraw(); revInfo(); refreshStripStatus();
 }
 function revSelect(k){
-  const ts=barToks(REV.n); if(!ts.length){ clearSel(); markStaff(); revInfo(); return; }
+  const ts=revToks(); if(!ts.length){ clearSel(); markStaff(); revInfo(); return; }
   REV.sel=Math.max(0,Math.min(ts.length-1,k)); const i=ts[REV.sel].i; selSet=new Set([i]); anchorIdx=i; markStaff();
   const it=LAY.items[i]; if(it){ const sc=$('scoreScroll'); const top=it.sys*SYS_H; if(top<sc.scrollTop||top+SYS_H>sc.scrollTop+sc.clientHeight) sc.scrollTop=top-10; }
   $('hover').textContent=tokLabel(ts[REV.sel].t); revInfo();
@@ -2637,37 +2656,50 @@ function tokCode(t){
 }
 function revInfo(){
   if(!REV.on) return; const x=findStripBar(REV.n); const odd=barLenOdd(); const st=x?barState(x.m,odd):{cls:'ok',why:[]};
-  $('revTitle').textContent=`第 ${REV.n} 小節`+(st.cls==='done'?' ✓':''); $('revUndo').hidden=st.cls!=='done';
-  const why=$('revWhy'); why.textContent=st.why.length?st.why.join('、'):'看起來沒問題'; why.classList.toggle('ok',st.cls==='ok'||st.cls==='done');
+  const pr=revPair(), n2=pr[1]&&pr[1].m.n; $('revTitle').textContent=`第 ${REV.n}${n2!=null?'＋'+n2:''} 小節`+(st.cls==='done'?'（第 '+REV.n+' 小節已確認 ✓）':''); $('revUndo').hidden=st.cls!=='done';
+  const st2=pr[1]?barState(pr[1].m,odd):null; const w2=st2&&(st2.cls==='err'||st2.cls==='warn')?`；第 ${n2} 小節：${st2.why.join('、')}`:'';
+  const why=$('revWhy'); why.textContent=`第 ${REV.n} 小節：`+(st.why.length?st.why.join('、'):'看起來沒問題')+w2; why.classList.toggle('ok',st.cls==='ok'||st.cls==='done');
   const all=allStripBars(); let sus=0,done=0; all.forEach(y=>{ const c=barState(y.m,odd).cls; if(c==='done') done++; else if(c==='err'||c==='warn') sus++; });
   $('revProg').textContent=`已確認 ${done}／${all.length} · 還有 ${sus} 個可疑`;
-  const ts=barToks(REV.n); $('revNow').innerHTML=ts.length?ts.map((y,k)=>`<span class="${k===REV.sel?'on':''}">${esc(tokCode(y.t))}</span>`).join(' '):'（這個小節還沒有內容，可以點上面的原譜補上音符）';
+  const ts=revToks(); $('revNow').innerHTML=ts.length?ts.map((y,k)=>(k&&y.t.bar!==ts[k-1].t.bar?'<span class="sep">|</span> ':'')+`<span class="${k===REV.sel?'on':''}">${esc(tokCode(y.t))}</span>`).join(' '):'（這兩個小節還沒有內容，可以點上面的原譜補上音符）';
 }
 function revImg(x){ return new Promise(res=>{ if(REV.imgs[x.sp.url]) return res(REV.imgs[x.sp.url]); const im=new Image(); im.onload=()=>{ REV.imgs[x.sp.url]=im; res(im); }; im.src=x.sp.url; }); }
 async function revDraw(){
-  const x=findStripBar(REV.n); const cv=$('revCanvas'); if(!x){ cv.width=cv.height=0; return; }
-  const im=await revImg(x); const sp=x.sp, m=x.m, pad=(sp.sS||10)*1.2;
-  const sx0=Math.max(0,m.x0-pad), sx1=Math.min(sp.w,m.x1+pad), sw=sx1-sx0;
-  const avail=Math.max(280,$('revView').clientWidth-4); const z=Math.min(2.4,avail/sw);
-  cv.width=Math.round(sw*z); cv.height=Math.round(sp.h*z); const c=cv.getContext('2d');
-  c.fillStyle='#fff'; c.fillRect(0,0,cv.width,cv.height); c.drawImage(im,sx0,0,sw,sp.h,0,0,cv.width,cv.height);
-  c.fillStyle='rgba(251,85,51,.08)'; c.fillRect((m.x0-sx0)*z,0,(m.x1-m.x0)*z,cv.height);
-  const r=(sp.sS||10)*0.55*z; c.lineWidth=1.5; c.font=`600 ${Math.round(12*Math.max(1,z*0.8))}px ui-monospace,monospace`;
-  (m.marks||[]).forEach(k=>{ const X=(k.x-sx0)*z, Y=k.y*z;
-    if(k.t==='r'){ c.strokeStyle='#4C6EF5'; c.fillStyle='rgba(76,110,245,.15)'; c.fillRect(X-r,Y-2*r,2*r,4*r); c.strokeRect(X-r,Y-2*r,2*r,4*r); c.fillStyle='#2F4FC8'; c.fillText(k.l,X-r,Y-2*r-5); }
-    else{ c.strokeStyle='#FB5533'; c.fillStyle=k.t==='c'?'rgba(0,0,0,0)':'rgba(251,85,51,.2)'; c.beginPath(); c.arc(X,Y,r,0,7); c.fill(); c.stroke(); if(k.l){ c.fillStyle='#B8321A'; c.fillText(k.l,X-r,Y-r-5); } } });
-  REV.view={sx0,z,sp,m};
+  const cv=$('revCanvas'); const pr=revPair(); if(!pr.length){ cv.width=cv.height=0; REV.view=null; return; }
+  // one crop per strip: two bars on the same line come out as one continuous picture
+  const segs=[]; for(const x of pr){ const l=segs[segs.length-1]; if(l&&l.sp===x.sp) l.ms.push(x.m); else segs.push({sp:x.sp,ms:[x.m],x}); }
+  const GAP=14; let total=0, H=0;
+  for(const g of segs){ g.im=await revImg(g.x); const pad=(g.sp.sS||10)*1.2; g.sx0=Math.max(0,Math.min(...g.ms.map(m=>m.x0))-pad); g.sx1=Math.min(g.sp.w,Math.max(...g.ms.map(m=>m.x1))+pad); total+=g.sx1-g.sx0; H=Math.max(H,g.sp.h); }
+  const avail=Math.max(280,$('revView').clientWidth-4); const z=Math.min(2.4,(avail-GAP*(segs.length-1))/total);
+  cv.width=Math.round(total*z+GAP*(segs.length-1)); cv.height=Math.round(H*z); const c=cv.getContext('2d');
+  c.fillStyle='#fff'; c.fillRect(0,0,cv.width,cv.height);
+  let ox=0;
+  for(const g of segs){ const sw=g.sx1-g.sx0, sp=g.sp; g.ox=ox;
+    c.drawImage(g.im,g.sx0,0,sw,sp.h,ox,0,sw*z,sp.h*z);
+    g.ms.forEach(m=>{ const main=m.n===REV.n; c.fillStyle=main?'rgba(251,85,51,.10)':'rgba(76,110,245,.07)'; c.fillRect(ox+(m.x0-g.sx0)*z,0,(m.x1-m.x0)*z,cv.height);
+      c.fillStyle=main?'#B8321A':'#2F4FC8'; c.font=`700 ${Math.round(13*Math.max(1,z*0.7))}px system-ui,sans-serif`; c.fillText('第 '+m.n+' 小節',ox+(m.x0-g.sx0)*z+4,Math.round(16*Math.max(1,z*0.7))); });
+    const r=(sp.sS||10)*0.55*z; c.lineWidth=1.5; c.font=`600 ${Math.round(12*Math.max(1,z*0.8))}px ui-monospace,monospace`;
+    g.ms.forEach(m=>(m.marks||[]).forEach(k=>{ const X=ox+(k.x-g.sx0)*z, Y=k.y*z;
+      if(k.t==='r'){ c.strokeStyle='#4C6EF5'; c.fillStyle='rgba(76,110,245,.15)'; c.fillRect(X-r,Y-2*r,2*r,4*r); c.strokeRect(X-r,Y-2*r,2*r,4*r); c.fillStyle='#2F4FC8'; c.fillText(k.l,X-r,Y-2*r-5); }
+      else{ c.strokeStyle='#FB5533'; c.fillStyle=k.t==='c'?'rgba(0,0,0,0)':'rgba(251,85,51,.2)'; c.beginPath(); c.arc(X,Y,r,0,7); c.fill(); c.stroke(); if(k.l){ c.fillStyle='#B8321A'; c.fillText(k.l,X-r,Y-r-5); } } }));
+    ox+=sw*z;
+    if(g!==segs[segs.length-1]){ c.fillStyle='#ccd'; c.fillRect(ox+GAP/2-1,0,2,cv.height); ox+=GAP; }
+  }
+  REV.view={segs,z};
 }
 // click on the original to add a missing note there
 $('revCanvas').addEventListener('click',e=>{
-  const v=REV.view; if(!v||!v.sp.sS) return; const r=e.currentTarget.getBoundingClientRect();
-  const X=(e.clientX-r.left)*(e.currentTarget.width/r.width)/v.z+v.sx0, Y=(e.clientY-r.top)*(e.currentTarget.height/r.height)/v.z;
-  const p=Math.round((v.sp.sBot-Y)/(v.sp.sS/2)); if(REV.ins!=='rest'&&(p<MINP||p>MAXP)) return;
-  const ts=barToks(REV.n); const before=(v.m.marks||[]).filter(k=>k.t!=='c'&&k.x<X).length;
-  let pos; if(ts.length){ pos=before<ts.length?ts[before].t.s:ts[ts.length-1].t.e; } else if(P.bars[REV.n]&&P.bars[REV.n].pos!==undefined) pos=P.bars[REV.n].pos; else return;
+  const v=REV.view; if(!v) return; const r=e.currentTarget.getBoundingClientRect();
+  const cx=(e.clientX-r.left)*(e.currentTarget.width/r.width), Y=(e.clientY-r.top)*(e.currentTarget.height/r.height)/v.z;
+  const g=v.segs.find(g=>cx>=g.ox&&cx<=g.ox+(g.sx1-g.sx0)*v.z); if(!g||!g.sp.sS) return;
+  const X=(cx-g.ox)/v.z+g.sx0;
+  const m=g.ms.length>1?(g.ms.find(m=>X<m.x1)||g.ms[g.ms.length-1]):g.ms[0];
+  const p=Math.round((g.sp.sBot-Y)/(g.sp.sS/2)); if(REV.ins!=='rest'&&(p<MINP||p>MAXP)) return;
+  const ts=barToks(m.n); const before=(m.marks||[]).filter(k=>k.t!=='c'&&k.x<X).length;
+  let pos; if(ts.length){ pos=before<ts.length?ts[before].t.s:ts[ts.length-1].t.e; } else if(P.bars[m.n]&&P.bars[m.n].pos!==undefined) pos=P.bars[m.n].pos; else return;
   const {L,oct}=pitchAt(Math.max(MINP,Math.min(MAXP,p))); caretTouched=true; $('src').setSelectionRange(pos,pos); lastCaret=pos;
   if(REV.ins==='rest') insertToken('R/'+prefs.qdur); else { insertToken(L+oct+'/'+prefs.qdur); ensureCtx(); voice(freq((oct+1)*12+STEPS[L]+keyAcc(L,song().key)),ctx.currentTime+.01,.35); }
-  revSelect(Math.min(before,barToks(REV.n).length-1)); revInfo();
+  const all=revToks(); const first=all.findIndex(y=>y.t.bar===m.n); revSelect((first<0?0:first)+Math.min(before,barToks(m.n).length-1)); revInfo();
 });
 $('revTools').addEventListener('click',e=>{
   const bt=e.target.closest('button'); if(!bt) return;
@@ -2689,7 +2721,7 @@ document.addEventListener('keydown',e=>{
   if(revKey(e.key,e.shiftKey)){ e.preventDefault(); e.stopImmediatePropagation(); }
 },true);
 function revKey(k,shift){
-  const ts=barToks(REV.n); const sel=ts[REV.sel]; let done=true; const e={shiftKey:shift};
+  const ts=revToks(); const sel=ts[REV.sel]; let done=true; const e={shiftKey:shift};
   const act=a=>{ if(!sel) return; editTargets(a,[sel.i]); revSelect(REV.sel); };
   if(k==='Enter'&&!e.shiftKey) revConfirm();
   else if(k==='Enter'&&e.shiftKey) $('revPrev').onclick();
