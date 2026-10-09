@@ -165,6 +165,7 @@ input[type=checkbox]{accent-color:var(--accent);width:16px;height:16px}
 .rev-view{overflow-x:auto;background:#fff;border-radius:8px;border:1px solid var(--line)}
 #revCanvas{display:block;cursor:crosshair;max-width:none}
 .rev-now{font:500 14px var(--mono);overflow-wrap:anywhere}
+.rev-tools{flex-wrap:wrap;gap:6px}.rev-sep{flex-basis:100%;height:0}.rev-tools .seg button{padding:6px 10px}
 .rev-now .on{background:var(--accent);color:var(--accent-ink);border-radius:4px;padding:0 3px}
 .codeprev{display:flex;flex-direction:column;gap:3px;font-size:13px}
 .codeprev:empty{display:none}
@@ -461,6 +462,23 @@ summary{cursor:pointer;font-weight:500}
         </div>
         <div class="rev-view" id="revView"><canvas id="revCanvas"></canvas></div>
         <div class="rev-now">目前的內容：<span id="revNow"></span></div>
+        <div class="row rev-tools" id="revTools">
+          <span class="seg" role="group" aria-label="點原譜時補上">
+            <button type="button" data-ins="note" aria-pressed="true">點譜補音符</button><button type="button" data-ins="rest" aria-pressed="false">點譜補休止符</button>
+          </span>
+          <span class="rev-sep"></span>
+          <button class="btn" type="button" data-r="ArrowLeft" title="←">◀ 選前一個</button>
+          <button class="btn" type="button" data-r="ArrowRight" title="→">選下一個 ▶</button>
+          <button class="btn" type="button" data-r="ArrowUp" title="↑">音高 ↑</button>
+          <button class="btn" type="button" data-r="ArrowDown" title="↓">音高 ↓</button>
+          <span class="seg" role="group" aria-label="時值">
+            <button type="button" data-r="1" title="鍵盤 1">全</button><button type="button" data-r="2" title="鍵盤 2">二分</button><button type="button" data-r="4" title="鍵盤 4">四分</button><button type="button" data-r="8" title="鍵盤 8">八分</button><button type="button" data-r="6" title="鍵盤 6">十六分</button>
+          </span>
+          <button class="btn" type="button" data-r="." title="鍵盤 .">附點</button>
+          <button class="btn" type="button" data-r="~" title="鍵盤 ~">連結線</button>
+          <button class="btn" type="button" data-r="0" title="鍵盤 0">改成休止符</button>
+          <button class="btn danger" type="button" data-r="Delete" title="Delete">刪除</button>
+        </div>
         <div class="row">
           <button class="btn" id="revPrev" type="button" title="Shift+Enter">◀ 上一個</button>
           <button class="btn primary" id="revOk" type="button">✓ 正確，下一個（Enter）</button>
@@ -468,7 +486,7 @@ summary{cursor:pointer;font-weight:500}
           <label class="field"><input type="checkbox" id="revOnlySus" checked>只看可疑的小節</label>
           <button class="btn" id="revExit" type="button">結束校對（Esc）</button>
         </div>
-        <p class="note">鍵盤：← → 選音 · ↑ ↓ 音高（Shift 升降半音）· 1 2 4 8 6 時值（全、二分、四分、八分、十六分）· . 附點 · ~ 連結線 · # b n 臨時記號 · 0 改成休止符 · Delete 刪除。原譜上漏掉的音，直接點它的位置就會補上。</p>
+        <p class="note"><b>怎麼用：</b>對照上面的原譜，看「目前的內容」哪裡不一樣 → 用 ◀ ▶ 選到那個音 → 按按鈕修改。原譜上有、這裡卻沒有的音或休止符，先選好「點譜補音符／休止符」，再直接點原譜上它的位置。改好按「正確，下一個」。也可以點上方對照條的任一小節直接跳過去。<br>鍵盤：← → 選音 · ↑ ↓ 音高（Shift 升降半音）· 1 2 4 8 6 時值（全、二分、四分、八分、十六分）· . 附點 · ~ 連結線 · # b n 臨時記號 · 0 改成休止符 · Delete 刪除。原譜上漏掉的音，直接點它的位置就會補上。</p>
       </div>
       <div class="editbar idle" id="editbar" role="toolbar" aria-label="編輯選取的音符">
         <span class="note" id="selInfo">點選音符後，可在這裡調整</span>
@@ -2586,7 +2604,7 @@ function refreshStripStatus(){
 $('stripMarks').onclick=e=>{ const b=e.currentTarget, on=b.getAttribute('aria-pressed')!=='true'; b.setAttribute('aria-pressed',on); $('stripList').querySelectorAll('.strip').forEach(d=>d.classList.toggle('nomarks',!on)); };
 
 /* ---- review one bar at a time ---- */
-const REV={on:false,n:null,sel:0,imgs:{}};
+const REV={on:false,n:null,sel:0,imgs:{},ins:'note'};
 function allStripBars(){ const out=[]; STRIPS.forEach((sp,si)=>sp.bars.forEach(m=>out.push({m,sp,si}))); return out; }
 function findStripBar(n){ return allStripBars().find(x=>x.m.n===n); }
 function barToks(n){ return P.toks.map((t,i)=>({t,i})).filter(x=>x.t.bar===n&&(x.t.kind==='note'||x.t.kind==='rest')); }
@@ -2642,12 +2660,17 @@ async function revDraw(){
 $('revCanvas').addEventListener('click',e=>{
   const v=REV.view; if(!v||!v.sp.sS) return; const r=e.currentTarget.getBoundingClientRect();
   const X=(e.clientX-r.left)*(e.currentTarget.width/r.width)/v.z+v.sx0, Y=(e.clientY-r.top)*(e.currentTarget.height/r.height)/v.z;
-  const p=Math.round((v.sp.sBot-Y)/(v.sp.sS/2)); if(p<MINP||p>MAXP) return;
+  const p=Math.round((v.sp.sBot-Y)/(v.sp.sS/2)); if(REV.ins!=='rest'&&(p<MINP||p>MAXP)) return;
   const ts=barToks(REV.n); const before=(v.m.marks||[]).filter(k=>k.t!=='c'&&k.x<X).length;
   let pos; if(ts.length){ pos=before<ts.length?ts[before].t.s:ts[ts.length-1].t.e; } else if(P.bars[REV.n]&&P.bars[REV.n].pos!==undefined) pos=P.bars[REV.n].pos; else return;
-  const {L,oct}=pitchAt(p); caretTouched=true; $('src').setSelectionRange(pos,pos); lastCaret=pos;
-  insertToken(L+oct+'/'+prefs.qdur); ensureCtx(); voice(freq((oct+1)*12+STEPS[L]+keyAcc(L,song().key)),ctx.currentTime+.01,.35);
+  const {L,oct}=pitchAt(Math.max(MINP,Math.min(MAXP,p))); caretTouched=true; $('src').setSelectionRange(pos,pos); lastCaret=pos;
+  if(REV.ins==='rest') insertToken('R/'+prefs.qdur); else { insertToken(L+oct+'/'+prefs.qdur); ensureCtx(); voice(freq((oct+1)*12+STEPS[L]+keyAcc(L,song().key)),ctx.currentTime+.01,.35); }
   revSelect(Math.min(before,barToks(REV.n).length-1)); revInfo();
+});
+$('revTools').addEventListener('click',e=>{
+  const bt=e.target.closest('button'); if(!bt) return;
+  if(bt.dataset.ins){ REV.ins=bt.dataset.ins; $('revTools').querySelectorAll('[data-ins]').forEach(x=>{ const on=x===bt; x.classList.toggle('on',on); x.setAttribute('aria-pressed',on); }); return; }
+  if(bt.dataset.r) revKey(bt.dataset.r,false);
 });
 function revConfirm(){ const r=song().review||(song().review={done:{}}); r.done=r.done||{}; r.done[REV.n]=true; saveLib(true);
   const nx=nextBar(1,REV.n,$('revOnlySus').checked); if(nx===null){ refreshStripStatus(); $('revWhy').textContent='全部看完了！'; $('revWhy').classList.add('ok'); return; } revGo(nx); }
@@ -2660,7 +2683,10 @@ window.addEventListener('resize',()=>{ if(REV.on) revDraw(); });
 document.addEventListener('keydown',e=>{
   if(!REV.on||$('tab-edit').hidden) return;
   const tag=document.activeElement&&document.activeElement.tagName; if(/^(INPUT|TEXTAREA|SELECT)$/.test(tag)&&document.activeElement.type!=='checkbox') return;
-  const ts=barToks(REV.n); const sel=ts[REV.sel]; const k=e.key; let done=true;
+  if(revKey(e.key,e.shiftKey)){ e.preventDefault(); e.stopImmediatePropagation(); }
+},true);
+function revKey(k,shift){
+  const ts=barToks(REV.n); const sel=ts[REV.sel]; let done=true; const e={shiftKey:shift};
   const act=a=>{ if(!sel) return; editTargets(a,[sel.i]); revSelect(REV.sel); };
   if(k==='Enter'&&!e.shiftKey) revConfirm();
   else if(k==='Enter'&&e.shiftKey) $('revPrev').onclick();
@@ -2676,8 +2702,8 @@ document.addEventListener('keydown',e=>{
   else if(k==='0') act('rest');
   else if(k==='Delete'||k==='Backspace'){ if(sel){ deleteTokens([sel.i]); revSelect(REV.sel); } }
   else done=false;
-  if(done){ e.preventDefault(); e.stopImmediatePropagation(); }
-},true);
+  return done;
+}
 function highlightBar(n){
   const list=$('stripList'); if(!list||$('stripPanel').hidden) return;
   list.querySelectorAll('.sbar.on').forEach(g=>g.classList.remove('on'));
