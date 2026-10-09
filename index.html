@@ -152,7 +152,8 @@ input[type=checkbox]{accent-color:var(--accent);width:16px;height:16px}
 .strip .mk.r text{fill:#2F4FC8}
 .strip.nomarks .mk{display:none}
 .strip .sbar .st{height:5px}
-.strip .sbar.ok .st{fill:#2E9E5B} .strip .sbar.warn .st{fill:#E0A100} .strip .sbar.err .st{fill:#D93A2B} .strip .sbar.done .st{fill:#9AA5B1}
+.strip .sbar.ok .st{fill:#9AA5B1} .strip .sbar.warn .st{fill:#E0A100} .strip .sbar.err .st{fill:#D93A2B} .strip .sbar.done .st{fill:#2E9E5B;height:8px}
+.strip .sbar.done rect.bg{fill:rgba(46,158,91,.10)} .strip .sbar.done > text{fill:#1F7A45}
 .strip .sbar.warn rect.bg{fill:rgba(224,161,0,.08)} .strip .sbar.err rect.bg{fill:rgba(217,58,43,.08)}
 .strip .sbar.cur rect.bg{fill:rgba(251,85,51,.16);stroke:#FB5533;stroke-width:2}
 .strip .sbar{cursor:pointer}
@@ -483,7 +484,8 @@ summary{cursor:pointer;font-weight:500}
           <button class="btn" id="revPrev" type="button" title="Shift+Enter">◀ 上一個</button>
           <button class="btn primary" id="revOk" type="button">✓ 正確，下一個（Enter）</button>
           <button class="btn" id="revSkip" type="button">跳過 ▶</button>
-          <label class="field"><input type="checkbox" id="revOnlySus" checked>只看可疑的小節</label>
+          <button class="btn" id="revUndo" type="button" hidden>取消確認</button>
+          <label class="field"><input type="checkbox" id="revOnlySus" checked>只跳到可疑的小節（取消勾選＝每個小節都看一次）</label>
           <button class="btn" id="revExit" type="button">結束校對（Esc）</button>
         </div>
         <p class="note"><b>怎麼用：</b>對照上面的原譜，看「目前的內容」哪裡不一樣 → 用 ◀ ▶ 選到那個音 → 按按鈕修改。原譜上有、這裡卻沒有的音或休止符，先選好「點譜補音符／休止符」，再直接點原譜上它的位置。改好按「正確，下一個」。也可以點上方對照條的任一小節直接跳過去。<br>鍵盤：← → 選音 · ↑ ↓ 音高（Shift 升降半音）· 1 2 4 8 6 時值（全、二分、四分、八分、十六分）· . 附點 · ~ 連結線 · # b n 臨時記號 · 0 改成休止符 · Delete 刪除。原譜上漏掉的音，直接點它的位置就會補上。</p>
@@ -2597,8 +2599,8 @@ function refreshStripStatus(){
   const odd=barLenOdd(); let nErr=0,nWarn=0,nDone=0,nAll=0;
   STRIPS.forEach(sp=>sp.bars.forEach(m=>{ nAll++; const st=barState(m,odd); if(st.cls==='err') nErr++; else if(st.cls==='warn') nWarn++; else if(st.cls==='done') nDone++;
     const g=list.querySelector(`.sbar[data-n="${m.n}"]`); if(g){ g.classList.remove('ok','warn','err','done'); g.classList.add(st.cls); g.classList.toggle('cur',REV.on&&REV.n===m.n);
-      let t=g.querySelector('title'); if(!t){ t=document.createElementNS('http://www.w3.org/2000/svg','title'); g.prepend(t); } t.textContent=`第 ${m.n} 小節：`+(st.why.join('、')||'看起來沒問題'); } }));
-  $('stripSum').textContent=`共 ${nAll} 小節 · 紅 ${nErr} · 黃 ${nWarn} · 已確認 ${nDone}`;
+      let t=g.querySelector('title'); if(!t){ t=document.createElementNS('http://www.w3.org/2000/svg','title'); g.prepend(t); } t.textContent=`第 ${m.n} 小節：`+(st.why.join('、')||'沒有可疑的地方，還沒確認'); const lb=g.querySelector(':scope > text'); if(lb) lb.textContent=m.n+(st.cls==='done'?' ✓':''); } }));
+  $('stripSum').textContent=`已確認 ✓ ${nDone}／${nAll} · 紅 ${nErr} · 黃 ${nWarn} · 灰（還沒確認） ${nAll-nDone-nErr-nWarn}`;
   if(REV.on) revInfo();
 }
 $('stripMarks').onclick=e=>{ const b=e.currentTarget, on=b.getAttribute('aria-pressed')!=='true'; b.setAttribute('aria-pressed',on); $('stripList').querySelectorAll('.strip').forEach(d=>d.classList.toggle('nomarks',!on)); };
@@ -2608,14 +2610,14 @@ const REV={on:false,n:null,sel:0,imgs:{},ins:'note'};
 function allStripBars(){ const out=[]; STRIPS.forEach((sp,si)=>sp.bars.forEach(m=>out.push({m,sp,si}))); return out; }
 function findStripBar(n){ return allStripBars().find(x=>x.m.n===n); }
 function barToks(n){ return P.toks.map((t,i)=>({t,i})).filter(x=>x.t.bar===n&&(x.t.kind==='note'||x.t.kind==='rest')); }
-function nextBar(dir,fromN,onlySus){
+function nextBar(dir,fromN,onlySus,skipDone){
   const list=allStripBars(); const odd=barLenOdd(); let i=list.findIndex(x=>x.m.n===fromN);
-  for(let k=0;k<list.length;k++){ i+=dir; if(i<0||i>=list.length) return null; const st=barState(list[i].m,odd); if(!onlySus||st.cls==='err'||st.cls==='warn') return list[i].m.n; }
+  for(let k=0;k<list.length;k++){ i+=dir; if(i<0||i>=list.length) return null; const st=barState(list[i].m,odd); if(skipDone&&st.cls==='done') continue; if(!onlySus||st.cls==='err'||st.cls==='warn') return list[i].m.n; }
   return null;
 }
 function startReview(){
   if(!STRIPS.length) return; REV.on=true; $('revBox').hidden=false;
-  const odd=barLenOdd(); const first=allStripBars().find(x=>{ const c=barState(x.m,odd).cls; return c==='err'||c==='warn'; })||allStripBars()[0];
+  const odd=barLenOdd(); const first=allStripBars().find(x=>{ const c=barState(x.m,odd).cls; return c==='err'||c==='warn'; })||allStripBars().find(x=>barState(x.m,odd).cls!=='done')||allStripBars()[0];
   $('qePanel').scrollIntoView({block:'start',behavior:'smooth'}); revGo(first.m.n);
 }
 function endReview(){ REV.on=false; $('revBox').hidden=true; refreshStripStatus(); }
@@ -2635,7 +2637,7 @@ function tokCode(t){
 }
 function revInfo(){
   if(!REV.on) return; const x=findStripBar(REV.n); const odd=barLenOdd(); const st=x?barState(x.m,odd):{cls:'ok',why:[]};
-  $('revTitle').textContent=`第 ${REV.n} 小節`;
+  $('revTitle').textContent=`第 ${REV.n} 小節`+(st.cls==='done'?' ✓':''); $('revUndo').hidden=st.cls!=='done';
   const why=$('revWhy'); why.textContent=st.why.length?st.why.join('、'):'看起來沒問題'; why.classList.toggle('ok',st.cls==='ok'||st.cls==='done');
   const all=allStripBars(); let sus=0,done=0; all.forEach(y=>{ const c=barState(y.m,odd).cls; if(c==='done') done++; else if(c==='err'||c==='warn') sus++; });
   $('revProg').textContent=`已確認 ${done}／${all.length} · 還有 ${sus} 個可疑`;
@@ -2673,9 +2675,10 @@ $('revTools').addEventListener('click',e=>{
   if(bt.dataset.r) revKey(bt.dataset.r,false);
 });
 function revConfirm(){ const r=song().review||(song().review={done:{}}); r.done=r.done||{}; r.done[REV.n]=true; saveLib(true);
-  const nx=nextBar(1,REV.n,$('revOnlySus').checked); if(nx===null){ refreshStripStatus(); $('revWhy').textContent='全部看完了！'; $('revWhy').classList.add('ok'); return; } revGo(nx); }
+  const nx=nextBar(1,REV.n,$('revOnlySus').checked,true)??nextBar(1,-1e9,$('revOnlySus').checked,true); if(nx===null){ refreshStripStatus(); const left=allStripBars().filter(x=>barState(x.m,barLenOdd()).cls!=='done').length; $('revWhy').textContent=left?`可疑的都看完了！還有 ${left} 個灰色小節沒確認，取消勾選「只跳到可疑的小節」就能逐一確認`:'全部確認完了！'; $('revWhy').classList.add('ok'); return; } revGo(nx); }
 $('revOk').onclick=revConfirm;
-$('revSkip').onclick=()=>{ const nx=nextBar(1,REV.n,$('revOnlySus').checked); if(nx!==null) revGo(nx); };
+$('revUndo').onclick=()=>{ const r=song().review; if(r&&r.done){ delete r.done[REV.n]; saveLib(true); } refreshStripStatus(); revInfo(); };
+$('revSkip').onclick=()=>{ const nx=nextBar(1,REV.n,$('revOnlySus').checked,true); if(nx!==null) revGo(nx); };
 $('revPrev').onclick=()=>{ const pv=nextBar(-1,REV.n,$('revOnlySus').checked); if(pv!==null) revGo(pv); };
 $('revExit').onclick=endReview;
 $('revStart').onclick=()=>{ if(!P.toks.length){ $('stripSum').textContent='請先把草稿輸入碼按 Enter 套用，再開始校對'; return; } startReview(); };
