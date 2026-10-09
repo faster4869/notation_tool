@@ -330,11 +330,11 @@ summary{cursor:pointer;font-weight:500}
     <section class="panel" id="importPanel" aria-label="從樂譜匯入">
       <div class="row" style="justify-content:space-between">
         <h2 class="qe-title">從樂譜匯入</h2>
-        <span class="note">有 MusicXML 檔最準；只有 PDF 的話，可以挑出你的聲部並產生草稿</span>
+        <span class="note">有 MusicXML 或 MuseScore（.mscz）檔最準；只有 PDF 的話，可以挑出你的聲部並產生草稿</span>
       </div>
       <div class="row">
-        <label class="btn" for="xmlFile">匯入 MusicXML…</label>
-        <input id="xmlFile" type="file" accept=".musicxml,.xml,.mxl,application/vnd.recordare.musicxml+xml,application/vnd.recordare.musicxml" hidden>
+        <label class="btn" for="xmlFile">匯入 MusicXML／MuseScore…</label>
+        <input id="xmlFile" type="file" accept=".musicxml,.xml,.mxl,.mscz,.mscx,application/vnd.recordare.musicxml+xml,application/vnd.recordare.musicxml" hidden>
         <label class="btn" for="pdfFile">掃描 PDF／圖片…</label>
         <input id="pdfFile" type="file" accept=".pdf,application/pdf,image/*" hidden>
         <span class="note" id="impStatus" aria-live="polite"></span>
@@ -1806,7 +1806,7 @@ const sharedClips=o=>(Array.isArray(o.audio)?o.audio:[]).filter(a=>a&&a.file).ma
 async function unzipEntries(buf){
   const dv=new DataView(buf), u8=new Uint8Array(buf); let eocd=-1;
   for(let i=buf.byteLength-22;i>=Math.max(0,buf.byteLength-66000);i--){ if(dv.getUint32(i,true)===0x06054b50){ eocd=i; break; } }
-  if(eocd<0) throw new Error('不是有效的 .mxl 壓縮檔');
+  if(eocd<0) throw new Error('不是有效的 .mxl／.mscz 壓縮檔');
   const n=dv.getUint16(eocd+10,true); let p=dv.getUint32(eocd+16,true); const out={};
   for(let k=0;k<n;k++){
     if(dv.getUint32(p,true)!==0x02014b50) break;
@@ -1833,15 +1833,129 @@ async function readMusicXmlFile(file){
     const z=await unzipEntries(buf); let root=null;
     const c=await z.read('META-INF/container.xml');
     if(c){ const m=decodeXml(c).match(/full-path\s*=\s*"([^"]+)"/); if(m) root=m[1]; }
-    if(!root) root=Object.keys(z).find(k=>/\.(xml|musicxml)$/i.test(k)&&!/^META-INF\//i.test(k));
+    if(!root) root=Object.keys(z).find(k=>/\.mscx$/i.test(k)&&!/^(Excerpts|META-INF)\//i.test(k))||Object.keys(z).find(k=>/\.(xml|musicxml)$/i.test(k)&&!/^META-INF\//i.test(k));
     if(!root) throw new Error('壓縮檔裡找不到樂譜');
     text=decodeXml(await z.read(root));
   } else text=decodeXml(u8);
+  if(/<museScore[\s>]/.test(text.slice(0,2000))) return mscxToMusicXml(text);
   const doc=new DOMParser().parseFromString(text,'application/xml');
   if(doc.querySelector('parsererror')) throw new Error('檔案格式不對，無法讀取');
   const root=doc.documentElement;
   if(root.nodeName==='score-timewise') throw new Error('這是「timewise」格式的 MusicXML，目前只支援一般的 partwise 格式');
   if(root.nodeName!=='score-partwise') throw new Error('這不是 MusicXML 樂譜檔');
+  return doc;
+}
+/* MuseScore (.mscz / .mscx, version 3–5) -> MusicXML document, so the MusicXML importer can read it */
+function mscxText(el){ if(!el) return ''; let o=''; el.childNodes.forEach(n=>{ if(n.nodeType===3) o+=n.nodeValue; else if(n.nodeName==='sym') o+=n.textContent.trim()==='lyricsElision'?'‿':''; else o+=mscxText(n); }); return o.trim(); }
+function mscxToMusicXml(text){
+  const src=new DOMParser().parseFromString(text,'application/xml');
+  if(src.querySelector('parsererror')) throw new Error('MuseScore 檔案內容損壞，無法讀取');
+  const ms=src.documentElement; const ver=parseFloat(ms.getAttribute('version')||'0');
+  if(ver<3) throw new Error('這是 MuseScore 2 以前的舊檔，請用新版 MuseScore 打開後另存一次，或匯出成 MusicXML');
+  const score=kid(ms,'Score'); if(!score) throw new Error('檔案裡找不到樂譜');
+  const DIV=+kidText(score,'Division')||480;
+  const X=s=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  const TYPEQ={'long':16,'breve':8,'whole':4,'half':2,'quarter':1,'eighth':.5,'16th':.25,'32nd':.125,'64th':.0625,'128th':.03125,'256th':.015625};
+  const frac=s=>{ const m=String(s||'').match(/(-?\d+)\s*\/\s*(\d+)/); return m?(+m[1]/+m[2])*4:0; }; // in quarter notes
+  const GRACE=['acciaccatura','appoggiatura','grace4','grace16','grace32','grace8after','grace16after','grace32after'];
+  const tpcStep=t=>{ const i=((t+1)%7+7)%7; return {L:'FCGDAEB'[i],alter:Math.floor((t+1)/7)-2}; };
+  let title=''; kids(score,'metaTag').forEach(m=>{ if(m.getAttribute('name')==='workTitle'&&m.textContent.trim()) title=m.textContent.trim(); });
+  // score-level staves hold the music; parts list which staves they own
+  const staffMusic={}; kids(score,'Staff').forEach(s=>staffMusic[s.getAttribute('id')]=s);
+  // ties: v5 stores <Tie><startElement>eid</startElement> on the end note
+  const tieStartEid=new Set(); score.querySelectorAll('Note > Tie > startElement').forEach(e=>tieStartEid.add(e.textContent.trim()));
+  let bpmDone=false;
+  const parts=[]; let pn=0;
+  let gStaff=0;
+  kids(score,'Part').forEach(part=>{
+    kids(part,'Staff').forEach(s=>{ gStaff++; s._sid=s.getAttribute('id')||String(gStaff); });
+    const ins0=kid(part,'Instrument');
+    kids(part,'Staff').forEach((s,i)=>{ const ic=kids(ins0,'clef').find(c=>(+c.getAttribute('staff')||1)===i+1); s._clef=kidText(s,'defaultClef')||(ic?ic.textContent.trim():''); });
+    const staves=kids(part,'Staff').filter(s=>{ const t=kid(s,'StaffType'); const g=t&&t.getAttribute('group'); return g!=='tablature'&&g!=='percussion'; });
+    if(!staves.length) return;
+    const ins=kid(part,'Instrument'); const lab=kid(ins,'InstrumentLabel')||ins;
+    const name=kidText(part,'trackName')||kidText(lab,'longName')||kidText(ins,'trackName')||('Part '+(pn+1));
+    pn++; const pid='P'+pn; let body='';
+    const music=staves.map(s=>staffMusic[s._sid]).map(st=>st?kids(st,'Measure'):[]);
+    const nMeas=Math.max(...music.map(m=>m.length));
+    let sig=4, number=0, attrsDone=false;
+    for(let mi=0;mi<nMeas;mi++){
+      const first=music[0][mi]; const lenAttr=first&&first.getAttribute('len');
+      const irregular=first&&kidText(first,'irregular')==='1';
+      let out=''; let attr=''; let key=null, ts=null; const clefs=[];
+      // header elements (clef/key/time) live in the voices
+      music.forEach((ms_,si)=>{ const M=ms_[mi]; if(!M) return; const v1=kids(M,'voice')[0]; if(!v1) return;
+        for(const el of v1.children){
+          if(el.nodeName==='KeySig'&&key===null){ const k=kidText(el,'concertKey')||kidText(el,'accidental')||kidText(el,'key'); if(k!=='') key=+k; }
+          else if(el.nodeName==='TimeSig'&&!ts){ const n=+kidText(el,'sigN'), d=+kidText(el,'sigD'); if(n&&d) ts=[n,d]; }
+          else if(el.nodeName==='Clef'&&!clefs[si]){ clefs[si]=kidText(el,'concertClefType')||kidText(el,'subtype'); }
+          else if(el.nodeName==='Chord'||el.nodeName==='Rest') break;
+        } });
+      if(ts) sig=ts[0]*4/ts[1];
+      if(!attrsDone) staves.forEach((st,si)=>{ if(!clefs[si]) clefs[si]=st._clef||'G'; });
+      const mlen=lenAttr?frac(lenAttr):sig;
+      if(!attrsDone||key!==null||ts||clefs.some(Boolean)){
+        attr+=`<attributes>${!attrsDone?`<divisions>${DIV}</divisions>`:''}${key!==null?`<key><fifths>${key}</fifths></key>`:''}${ts?`<time><beats>${ts[0]}</beats><beat-type>${ts[1]}</beat-type></time>`:''}${!attrsDone?`<staves>${staves.length}</staves>`:''}`;
+        clefs.forEach((c,si)=>{ if(!c) return; const sign=c[0]==='F'?'F':c[0]==='C'?'C':'G'; const line=sign==='F'?4:sign==='C'?(c==='C4'?4:3):2; const oc=/8vb|15mb/.test(c)?-1:/8va/.test(c)?1:0;
+          attr+=`<clef number="${si+1}"><sign>${sign}</sign><line>${line}</line>${oc?`<clef-octave-change>${oc}</clef-octave-change>`:''}</clef>`; });
+        attr+='</attributes>'; attrsDone=true;
+      }
+      // tempo (first one only)
+      if(!bpmDone) music.forEach(ms_=>{ const M=ms_[mi]; if(!M||bpmDone) return; const t=M.querySelector('voice > Tempo > tempo'); if(t){ bpmDone=true; out+=`<sound tempo="${Math.round(parseFloat(t.textContent)*60)}"/>`; } });
+      let back=0;
+      music.forEach((ms_,si)=>{ const M=ms_[mi]; if(!M) return;
+        kids(M,'voice').forEach((V,vi)=>{
+          if(back>0){ out+=`<backup><duration>${back}</duration></backup>`; back=0; }
+          let t=0; const tup=[]; const tupById={};
+          const fwd=q=>{ const d=Math.round(q*DIV); if(d>0){ out+=`<forward><duration>${d}</duration><voice>${vi+1}</voice><staff>${si+1}</staff></forward>`; } t+=q; };
+          for(const el of V.children){
+            const nm=el.nodeName;
+            if(nm==='location'){ const q=frac(kidText(el,'fractions')); if(q>0) fwd(q); else if(q<0){ const d=Math.round(-q*DIV); out+=`<backup><duration>${d}</duration></backup>`; t+=q; } continue; }
+            if(nm==='Tuplet'){ const n=+kidText(el,'normalNotes')||2, a=+kidText(el,'actualNotes')||3; const r={n,a}; if(el.getAttribute('id')) tupById[el.getAttribute('id')]=r; tup.push(r); continue; }
+            if(nm==='endTuplet'){ tup.pop(); continue; }
+            if(nm!=='Chord'&&nm!=='Rest') continue;
+            if(GRACE.some(g=>kid(el,g))) continue;
+            const dtl=kids(el,'durationType'); const dt=dtl.length?dtl[dtl.length-1].textContent.trim():''; const dots=+kidText(el,'dots')||0;
+            let q; if(dt==='measure'){ q=frac(kidText(el,'duration'))||mlen; } else q=(TYPEQ[dt]||1)*(2-Math.pow(.5,dots));
+            let ratio=1; const tid=kidText(el,'Tuplet'); if(tid&&tupById[tid]){ const r=tupById[tid]; ratio=r.n/r.a; } else tup.forEach(r=>ratio*=r.n/r.a);
+            q*=ratio; const d=Math.round(q*DIV);
+            const typeTag=dt&&dt!=='measure'&&TYPEQ[dt]?`<type>${dt==='long'?'long':dt}</type>${'<dot/>'.repeat(dots)}`:'';
+            const tm=ratio!==1&&tup.length+(tid?1:0)?(r=>`<time-modification><actual-notes>${r.a}</actual-notes><normal-notes>${r.n}</normal-notes></time-modification>`)(tid&&tupById[tid]?tupById[tid]:tup[tup.length-1]):'';
+            const vs=`<voice>${vi+1}</voice>`, sts=`<staff>${si+1}</staff>`;
+            const ns=kids(el,'Note'); if(nm==='Chord'&&ns.length&&ns.every(N=>kidText(N,'play')==='0')){ fwd(q); continue; } // cue notes (not played) belong to another part
+            if(nm==='Rest'){
+              if(kidText(el,'visible')==='0'){ fwd(q); continue; }
+              out+=`<note><rest${dt==='measure'?' measure="yes"':''}/><duration>${d}</duration>${vs}${typeTag}${tm}${sts}</note>`; t+=q; continue; }
+            // lyrics
+            let ly=''; kids(el,'Lyrics').forEach(L=>{ const no=+kidText(L,'no')||0; const txt=mscxText(kid(L,'text')); if(!txt) return;
+              ly+=`<lyric number="${no+1}">${kidText(L,'syllabic')?`<syllabic>${X(kidText(L,'syllabic'))}</syllabic>`:''}<text>${X(txt)}</text></lyric>`; });
+            kids(el,'Note').forEach((N,ni)=>{
+              const pitch=+kidText(N,'pitch'); const tpcS=kidText(N,'tpc'); let L,alter;
+              if(tpcS!==''){ ({L,alter}=tpcStep(+tpcS)); } else { const pc=((pitch%12)+12)%12; [L,alter]=[['C',0],['C',1],['D',0],['D',1],['E',0],['F',0],['F',1],['G',0],['G',1],['A',0],['A',1],['B',0]][pc]; }
+              const oct=Math.floor((pitch-alter)/12)-1;
+              let tie='';
+              const eid=kidText(N,'eid'); if(eid&&tieStartEid.has(eid)) tie+='<tie type="start"/>';
+              if(kid(N,'Tie')&&kid(kid(N,'Tie'),'startElement')) tie+='<tie type="stop"/>';
+              kids(N,'Spanner').forEach(sp=>{ if(sp.getAttribute('type')!=='Tie') return; if(kid(sp,'next')) tie+='<tie type="start"/>'; if(kid(sp,'prev')) tie+='<tie type="stop"/>'; });
+              if(kid(N,'Tie')&&!kid(kid(N,'Tie'),'startElement')&&kid(N,'Tie').getAttribute('id')!==null) tie+='<tie type="start"/>';
+              if(kid(N,'endSpanner')) tie+='<tie type="stop"/>';
+              out+=`<note>${ni?'<chord/>':''}<pitch><step>${L}</step>${alter?`<alter>${alter}</alter>`:''}<octave>${oct}</octave></pitch><duration>${d}</duration>${tie}${vs}${typeTag}${tm}${sts}${ni===0?ly:''}</note>`;
+            });
+            t+=q;
+          }
+          back=Math.round(t*DIV);
+        });
+      });
+      const off=first?+kidText(first,'noOffset')||0:0; if(off) number+=off;
+      const num=(mi===0&&irregular&&mlen<sig-1e-6)?0:irregular?number:++number;
+      body+=`<measure number="${num}">${attr}${out}</measure>`;
+    }
+    parts.push({pid,name,body});
+  });
+  if(!parts.length) throw new Error('這份 MuseScore 檔裡找不到可以唱的聲部');
+  const xml=`<?xml version="1.0" encoding="UTF-8"?><score-partwise version="3.1">${title?`<work><work-title>${X(title)}</work-title></work>`:''}<part-list>${parts.map(p=>`<score-part id="${p.pid}"><part-name>${X(p.name)}</part-name></score-part>`).join('')}</part-list>${parts.map(p=>`<part id="${p.pid}">${p.body}</part>`).join('')}</score-partwise>`;
+  const doc=new DOMParser().parseFromString(xml,'application/xml');
+  if(doc.querySelector('parsererror')) throw new Error('MuseScore 檔轉換失敗');
   return doc;
 }
 const kidText=(el,name)=>{ const c=el&&[...el.children].find(x=>x.nodeName===name); return c?c.textContent.trim():''; };
