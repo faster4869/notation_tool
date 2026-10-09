@@ -1832,7 +1832,7 @@ async function readMusicXmlFile(file){
   if(u8[0]===0x50&&u8[1]===0x4B){ // zip (.mxl)
     const z=await unzipEntries(buf); let root=null;
     const c=await z.read('META-INF/container.xml');
-    if(c){ const m=decodeXml(c).match(/full-path\s*=\s*"([^"]+)"/); if(m) root=m[1]; }
+    if(c){ const fs=[...decodeXml(c).matchAll(/full-path\s*=\s*"([^"]+)"/g)].map(m=>m[1]).filter(n=>z[n]); root=fs.find(n=>/\.mscx$/i.test(n))||fs.find(n=>/\.(xml|musicxml)$/i.test(n))||null; }
     if(!root) root=Object.keys(z).find(k=>/\.mscx$/i.test(k)&&!/^(Excerpts|META-INF)\//i.test(k))||Object.keys(z).find(k=>/\.(xml|musicxml)$/i.test(k)&&!/^META-INF\//i.test(k));
     if(!root) throw new Error('壓縮檔裡找不到樂譜');
     text=decodeXml(await z.read(root));
@@ -1874,7 +1874,8 @@ function mscxToMusicXml(text){
     const staves=kids(part,'Staff').filter(s=>{ const t=kid(s,'StaffType'); const g=t&&t.getAttribute('group'); return g!=='tablature'&&g!=='percussion'; });
     if(!staves.length) return;
     const ins=kid(part,'Instrument'); const lab=kid(ins,'InstrumentLabel')||ins;
-    const name=kidText(part,'trackName')||kidText(lab,'longName')||kidText(ins,'trackName')||('Part '+(pn+1));
+    const ln=mscxText(kid(lab,'longName'))||mscxText(kid(ins,'longName')), tn=kidText(part,'trackName')||kidText(ins,'trackName');
+    const name=(ln&&tn&&ln!==tn?`${ln}（${tn}）`:ln||tn)||('Part '+(pn+1));
     pn++; const pid='P'+pn; let body='';
     const music=staves.map(s=>staffMusic[s._sid]).map(st=>st?kids(st,'Measure'):[]);
     const nMeas=Math.max(...music.map(m=>m.length));
